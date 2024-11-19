@@ -27,13 +27,11 @@ REMOTE_PORT = args.dest_port
 
 # Creating IPV4, UDP socket
 udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-udp_socket.settimeout(5)  # main timeout for handshake
+udp_socket.settimeout(3)  # main timeout for handshake
 udp_socket.bind((LOCAL_IP, LOCAL_PORT))
 
 
 def create_header(msg_type: int, flags: int, length: int, msg_id: int, total_fragments: int, current_fragment: int, data: bytes) -> bytes:
-    # Merging type of msg and flag into one byte and formating header
-
     if msg_type < 0 or msg_type > 255:
         raise ValueError(f"msg_type out of range: {msg_type}")
     if msg_id < 0 or msg_id > 255:
@@ -43,12 +41,36 @@ def create_header(msg_type: int, flags: int, length: int, msg_id: int, total_fra
     if current_fragment < 0 or current_fragment > 65535:
         raise ValueError(f"current_fragment out of range: {current_fragment}")
 
+    global errored
+
     first_byte = (msg_type << 4) | flags
     header_format = "!B H B H H H"
-    # Calculating crc of data (the message)
-    crc = crc16.crc16xmodem(data)
-    # Returning struct with data at the end
+
+    if errored:
+        data = data + bytes("random text".encode("utf-8"))
+
+    crc = crc16.crc16xmodem(data)  # Compute CRC using crcmod
     return struct.pack(header_format, first_byte, length, msg_id, total_fragments, current_fragment, crc)
+
+# def create_header(msg_type: int, flags: int, length: int, msg_id: int, total_fragments: int, current_fragment: int, data: bytes) -> bytes:
+#
+#
+#     if msg_type < 0 or msg_type > 255:
+#         raise ValueError(f"msg_type out of range: {msg_type}")
+#     if msg_id < 0 or msg_id > 255:
+#         raise ValueError(f"msg_id out of range: {msg_id}")
+#     if total_fragments < 0 or total_fragments > 65535:
+#         raise ValueError(f"total_fragments out of range: {total_fragments}")
+#     if current_fragment < 0 or current_fragment > 65535:
+#         raise ValueError(f"current_fragment out of range: {current_fragment}")
+#
+#     # Merging type of msg and flag into one byte and formating header
+#     first_byte = (msg_type << 4) | flags
+#     header_format = "!B H B H H H"
+#     # Calculating crc of data (the message)
+#     crc = crc16.crc16xmodem(data)
+#     # Returning struct with data at the end
+#     return struct.pack(header_format, first_byte, length, msg_id, total_fragments, current_fragment, crc)
 
 
 def parse_header(header: bytes):
@@ -115,125 +137,65 @@ def handshake():
 
 def keep_alive():
     global role, end_connection
-    # Roles are set right after handshake was successful
-    if role == 1:  # The one who will send KA first
+    missed_heartbeats = 0
+
+    if role == 1:  # Initiator of the heartbeat
         while not end_connection:
-            time.sleep(5)  # Send keep-alive every 5 seconds
+            # Send heartbeat
             header = create_header(5, 0, 0, 0, 1, 1, b"")
             udp_socket.sendto(header, (REMOTE_IP, REMOTE_PORT))
-            # print("[Keep-alive] Still connected")
+            # print("[Keep-alive] Sent heartbeat")
+            time.sleep(2)
 
-            time.sleep(10)  # Check every 10 sec queue
-            if not msg_queue.empty():
-                # Do not need to check what is inside
-                continue
-            break
+            # Check for acknowledgment
+            response_received = False
+            for _ in range(3):
+                time.sleep(1)
+                if not msg_queue.empty():
+                    msg_queue.get()
+                    response_received = True
+                    # print("[Keep-alive] Heartbeat received")
+                    missed_heartbeats = 0
+                    break
 
-    else:  # The one who will listen first
+            if not response_received:
+                missed_heartbeats += 1
+                # print(f"[Keep-alive] Missed heartbeat {missed_heartbeats}")
+
+            if missed_heartbeats >= 3:
+                print("[Keep-alive] Connection lost")
+                end_connection = True
+                break
+
+    else:  # Listener for heartbeat
         while not end_connection:
-            time.sleep(8)  # Sleep and wait for K-A msg
-            if not msg_queue.empty():  # Check if the queue is not empty
+            time.sleep(5)
+            if not msg_queue.empty():  # Check for incoming heartbeat
+                msg_queue.get()  # Consume the message
+                # print("[Keep-alive] Heartbeat received")
+                missed_heartbeats = 0
+
+                # Send response
                 header = create_header(5, 0, 0, 0, 1, 1, b"")
-                # Send K-A message after receiving one
                 udp_socket.sendto(header, (REMOTE_IP, REMOTE_PORT))
-                # print("[Keep-alive] Still connected")
-                time.sleep(7)
-                continue
-            break
-    print("[Keep-alive] Connection lost")
+                # print("[Keep-alive] Sent heartbeat")
+            else:
+                missed_heartbeats += 1
+                # print(f"[Keep-alive] Missed heartbeat {missed_heartbeats}")
+
+            if missed_heartbeats >= 3:
+                print("[Keep-alive] Connection lost")
+                end_connection = True
+                break
 
 
 msg_id = 0
 last_received_msg_id = -1
 
 
-stop_and_wait = False
-
-
-# def listener():
-#     global stop_and_wait
-#     global last_received_msg_id
-#     global end_connection
-#
-#     received_fragments = {}
-#     expected_fragments = None
-#     current_file_data = b""
-#     file_name = None
-#
-#     received_fragments = {}
-#     while not end_connection:
-#         try:  # Try to receive msg
-#             data, address = udp_socket.recvfrom(1024)
-#             # Split msg into header and body
-#             header = data[:10]
-#             body = data[10:]
-#             header_info = parse_header(header)
-#             # Getting parts of header from received msg
-#             msg_type = header_info["msg_type"]
-#             received_crc = header_info["crc"]
-#             total_fragments = header_info['total_fragments']
-#             current_fragment = header_info['current_fragment']
-#             # Calculating crc to check if the message is correctly received
-#             computed_crc = crc16.crc16xmodem(body)
-#
-#
-#
-            # if msg_type == 8:  # Prijatie názvu súboru
-            #     file_name = body.decode('utf-8')
-            #     print(f"[Listener] Received file name: {file_name}")
-            #     continue
-            #
-            # if msg_type == 6:  # Prijatie fragmentu súboru
-            #     # if received_crc != computed_crc:
-            #     #     print(f"[Listener] Fragment {current_fragment} CRC mismatch.")
-            #     #     continue
-            #
-            #     received_fragments[current_fragment] = body
-            #     print(f"[Listener] Received fragment {current_fragment}/{total_fragments}")
-            #
-            #     if current_fragment == total_fragments:
-            #         current_file_data = b''.join(received_fragments[i] for i in range(1, total_fragments + 1))
-            #         save_received_file(file_name, current_file_data)
-            #         received_fragments = {}
-            #     continue
-#
-            # if msg_type == 5:  # If msg is 0101 (Keep-alive) put that into Queue
-            #     msg_queue.put(data)
-            #     continue  # "Ignore K-A" and continue receiving
-#
-#             if current_fragment == 1:
-#                 received_fragments = {}  # Resetting dictionary for fragments
-#
-#             if received_crc != computed_crc:
-#                 header = create_header(4, 0, 0, 0, 1, 1, b"")
-#                 udp_socket.sendto(header, (REMOTE_IP, REMOTE_PORT))
-#                 print(f"[Listener] NACK sent, wrong CRC")
-#
-#             received_fragments[current_fragment] = body.decode("utf-8")  # Adding fragment to dictionary
-#
-#             if current_fragment == total_fragments:
-#                 full_message = ''.join(received_fragments[i] for i in range(1, total_fragments + 1))  # Merging fragments into one message
-#                 print(f"[Listener] {full_message}")
-#                 continue
-#
-#             print(f"[Listener] {body.decode("utf-8")}")
-#
-#             if msg_type == 7:
-#                 print("[Listener] Ending connection based on user action")
-#                 end_connection = True
-#                 break
-#
-#             if last_received_msg_id == msg_id:
-#                 print(f"[Listener] Duplicate ID of msg!")
-#             else:
-#                 last_received_msg_id = msg_id
-#
-#         except socket.timeout:
-#             continue
-
-
 def listener():
-    global last_received_msg_id, end_connection
+    global last_received_msg_id, end_connection, msg_id, errored
+    file_name = "received file"
 
     received_fragments = {}
     while not end_connection:
@@ -249,38 +211,69 @@ def listener():
             received_crc = header_info["crc"]
             computed_crc = crc16.crc16xmodem(body)
 
+            if msg_type == 5:  # If msg is 0101 (Keep-alive) put that into Queue
+                msg_queue.put(data)
+                continue  # "Ignore K-A" and continue receiving
 
+            print(f"message id: {msg_id}")
 
+            if last_received_msg_id == msg_id:
+                print("rovnake ID")
+                errored = False
+                time.sleep(0.5)
+                # continue
 
-            if msg_type in {6, 11}:  # File fragment or message fragment
-                if received_crc != computed_crc:
-                    print(f"[Listener] CRC mismatch for fragment {current_fragment}, sending NACK")
-                    send_nack()
-                    continue
+            last_received_msg_id = msg_id
+
+            print(f"RECEIVED: {received_crc}, COMPUTED: {computed_crc}")
+
+            if received_crc != computed_crc:
+                print(f"[Listener] CRC mismatch for fragment {current_fragment}, sending NACK")
+                errored = False
+                send_nack()
+                continue
+
+            if msg_type == 8:  # Prijatie názvu súboru
+                file_name = body.decode('utf-8')
+                print(f"[Listener] Received file name: {file_name}")
+                continue
+
+            if msg_type == 6:  # Prijatie fragmentu súboru
+
+                send_ack()
+                print(f"[Listener] Received and ACK sent for fragment {current_fragment}/{total_fragments}")
+
+                received_fragments[current_fragment] = body
+                print(f"[Listener] Received fragment {current_fragment}/{total_fragments}")
+                if current_fragment == total_fragments:
+                    current_file_data = b''.join(received_fragments[i] for i in range(1, total_fragments + 1))
+                    save_received_file(file_name, current_file_data)
+                    received_fragments = {}
+                    print("[Listener] Received complete file and saved.")
+                    # Handle complete message or file
+                continue
+
+            if msg_type == 11:
 
                 send_ack()
                 print(f"[Listener] Received and ACK sent for fragment {current_fragment}/{total_fragments}")
 
                 received_fragments[current_fragment] = body
                 if current_fragment == total_fragments:
-                    print("[Listener] Received complete message or file.")
+                    print("[Listener] Received complete message.")
+                    print(f"[Listener] {body.decode("utf-8")}")
+
                     # Handle complete message or file
                     continue
-
-            if msg_type == 5:  # If msg is 0101 (Keep-alive) put that into Queue
-                msg_queue.put(data)
-                continue  # "Ignore K-A" and continue receiving
-
-            if msg_type == 8:  # File name
-                file_name = body.decode('utf-8')
-                print(f"[Listener] Received file name: {file_name}")
-                send_ack()
-                continue
 
             if msg_type == 7:  # End connection
                 print("[Listener] Ending connection as requested.")
                 end_connection = True
                 break
+
+        except ConnectionResetError:
+            # print("[Listener] Connection on the other side lost")
+            continue
 
         except socket.timeout:
             continue
@@ -288,23 +281,25 @@ def listener():
 
 end_connection = False
 
-
+errored = False
 def sender():
     max_fragment_size = 500  # Default size of fragment
-    global end_connection
+    global end_connection, errored
     while not end_connection:
         try:
             message = input(f"[Sender] Type message:\n")
 
             # Check if the user wants to end the connection
             if message == "/end":
-                send_end_message()
+                print("ending connection ...")
+                # send_end_message()
                 end_connection = True
                 break
 
             # Handle error messages
             if message == "/error":
-                send_error_message()
+                errored = True
+                print("Next fragment is errored")
                 continue
 
             # Handle changing fragment size
@@ -399,14 +394,14 @@ def send_file(file_path, max_fragment_size):
 
             # Wait for ACK or NACK
             try:
-                udp_socket.settimeout(2)
+                udp_socket.settimeout(0.5)
                 ack_data, _ = udp_socket.recvfrom(1024)
                 ack_header = parse_header(ack_data[:10])
 
                 if ack_header["msg_type"] == 15:  # ACK
                     print(f"[Sender] ACK received for fragment {current_fragment}")
                     break  # Next fragment
-                elif ack_header["msg_type"] == 13:  # NACK
+                if ack_header["msg_type"] == 13:  # NACK
                     print(f"[Sender] NACK received for fragment {current_fragment}, resending...")
                     continue
             except socket.timeout:
