@@ -217,7 +217,7 @@ def listener():
             if last_received_msg_id == msg_id:
                 print("rovnake ID")
                 errored = False
-                time.sleep(0.5)
+                # time.sleep(0.5)
                 # continue
 
             last_received_msg_id = msg_id
@@ -386,7 +386,7 @@ def send_file(file_path, max_fragment_size):
     fragments = [file_data[i:i + max_fragment_size] for i in range(0, len(file_data), max_fragment_size)]
     total_fragments = len(fragments)
 
-    udp_socket.settimeout(1)
+    udp_socket.settimeout(0.1)
 
     for current_fragment, fragment_data in enumerate(fragments, start=1):
         while True:
