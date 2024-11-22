@@ -189,9 +189,6 @@ def keep_alive():
                 break
 
 
-msg_id = 0
-last_received_msg_id = -1
-
 
 def listener():
     global last_received_msg_id, end_connection, msg_id, errored
@@ -250,7 +247,7 @@ def listener():
                     save_received_file(file_name, current_file_data)
                     received_fragments = {}
                     print("[Listener] Received complete file and saved.")
-                    # Handle complete message or file
+                    # Handle complete file
                 continue
 
             if msg_type == 11:
@@ -260,10 +257,10 @@ def listener():
 
                 received_fragments[current_fragment] = body
                 if current_fragment == total_fragments:
-                    print("[Listener] Received complete message.")
+                    #print("[Listener] Received complete message.")
                     print(f"[Listener] {body.decode("utf-8")}")
 
-                    # Handle complete message or file
+                    # Handle complete message
                     continue
 
             if msg_type == 7:  # End connection
@@ -321,26 +318,30 @@ def sender():
             break
 
 def send_end_message():
+    global msg_id
     msg_type = 7  # msg type is 0111 (End Connection)
-    header = create_header(msg_type, 0, 0, 0, 1, 1, b"")
+    header = create_header(msg_type, 0, 0, msg_id, 1, 1, b"")
     udp_socket.sendto(header, (REMOTE_IP, REMOTE_PORT))
 
 
 def send_ack():
+    global msg_id
     msg_type = 15  # msg type is 0111 (End Connection)
-    header = create_header(msg_type, 0, 0, 0, 1, 1, b"")
+    header = create_header(msg_type, 0, 0, msg_id, 1, 1, b"")
     udp_socket.sendto(header, (REMOTE_IP, REMOTE_PORT))
 
 
 def send_nack():
+    global msg_id
     msg_type = 13  # msg type is 0111 (End Connection)
-    header = create_header(msg_type, 0, 0, 0, 1, 1, b"")
+    header = create_header(msg_type, 0, 0, msg_id, 1, 1, b"")
     udp_socket.sendto(header, (REMOTE_IP, REMOTE_PORT))
 
 
 def send_error_message():
+    global msg_id
     msg_type = 10  # msg type is 0111 (End Connection)
-    header = create_header(msg_type, 0, 0, 0, 1, 1, b"")
+    header = create_header(msg_type, 0, 0, msg_id, 1, 1, b"")
     udp_socket.sendto(header, (REMOTE_IP, REMOTE_PORT))
 
 
@@ -370,6 +371,7 @@ def send_error_message():
 def send_file(file_path, max_fragment_size):
     global msg_id
     msg_id = (msg_id + 1) % 256
+    print(f"Teraz som zmenil msg IDna : {msg_id}")
 
     # Send file name first
     file_name = os.path.basename(file_path)
@@ -384,6 +386,8 @@ def send_file(file_path, max_fragment_size):
     fragments = [file_data[i:i + max_fragment_size] for i in range(0, len(file_data), max_fragment_size)]
     total_fragments = len(fragments)
 
+    udp_socket.settimeout(1)
+
     for current_fragment, fragment_data in enumerate(fragments, start=1):
         while True:
             msg_type = 6  # Message type for file fragment
@@ -394,7 +398,7 @@ def send_file(file_path, max_fragment_size):
 
             # Wait for ACK or NACK
             try:
-                udp_socket.settimeout(0.5)
+
                 ack_data, _ = udp_socket.recvfrom(1024)
                 ack_header = parse_header(ack_data[:10])
 
@@ -421,16 +425,20 @@ def send_message(message, max_fragment_size):
     header_size = 10
     max_payload_size = max_fragment_size
 
-    msg_id = (msg_id + 1) % 256
+    # msg_id = (msg_id + 1) % 256
+    current_msg_id = get_next_msg_id()
+    print(f"Teraz som zmenil msg IDna : {msg_id}")
 
     fragments = [message[i:i + max_payload_size] for i in range(0, len(message), max_payload_size)]
     total_fragments = len(fragments)
+    udp_socket.settimeout(3)  # Timeout for ACK
+
     for current_fragment, fragment_data in enumerate(fragments, start=1):
         while True:
             msg_type = 11  # Message type for text message
             flags = 0b0000
             length = len(fragment_data) + header_size
-            header = create_header(msg_type, flags, length, msg_id, total_fragments, current_fragment,
+            header = create_header(msg_type, flags, length, current_msg_id, total_fragments, current_fragment,
                                    fragment_data.encode("utf-8"))
 
             udp_socket.sendto(header + fragment_data.encode("utf-8"), (REMOTE_IP, REMOTE_PORT))
@@ -438,7 +446,6 @@ def send_message(message, max_fragment_size):
 
             # Wait for ACK or NACK
             try:
-                udp_socket.settimeout(2)  # Timeout for ACK
                 ack_data, _ = udp_socket.recvfrom(1024)
                 ack_header = parse_header(ack_data[:10])
 
@@ -449,8 +456,60 @@ def send_message(message, max_fragment_size):
                     print(f"[Sender] NACK received for fragment {current_fragment}, resending...")
                     continue  # Resend this fragment
             except socket.timeout:
-                print(f"[Sender] Timeout waiting for ACK, resending fragment {current_fragment}...")
+                print(f"[Sender] Timeout waiting for ACK, resending msg")
                 continue  # Resend on timeout
+
+
+# def send_message(message, max_fragment_size):
+#     global msg_id
+#     header_size = 10
+#     max_payload_size = max_fragment_size
+#
+#     msg_id = (msg_id + 1) % 256
+#
+#     fragments = [message[i:i + max_payload_size] for i in range(0, len(message), max_payload_size)]
+#     total_fragments = len(fragments)
+#     for current_fragment, fragment_data in enumerate(fragments, start=1):
+#         while True:
+#             msg_type = 11  # Message type for text message
+#             flags = 0b0000
+#             length = len(fragment_data) + header_size
+#             header = create_header(msg_type, flags, length, msg_id, total_fragments, current_fragment,
+#                                    fragment_data.encode("utf-8"))
+#
+#             udp_socket.sendto(header + fragment_data.encode("utf-8"), (REMOTE_IP, REMOTE_PORT))
+#             print(f"[Sender] Sent fragment {current_fragment}/{total_fragments}: {fragment_data}")
+#
+#             # Wait for ACK or NACK
+#             try:
+#                 udp_socket.settimeout(2)  # Timeout for ACK
+#                 ack_data, _ = udp_socket.recvfrom(1024)
+#                 ack_header = parse_header(ack_data[:10])
+#
+#                 if ack_header["msg_type"] == 15:  # ACK
+#                     print(f"[Sender] ACK received for fragment {current_fragment}")
+#                     break  # Move to the next fragment
+#                 elif ack_header["msg_type"] == 13:  # NACK
+#                     print(f"[Sender] NACK received for fragment {current_fragment}, resending...")
+#                     continue  # Resend this fragment
+#             except socket.timeout:
+#                 print(f"[Sender] Timeout waiting for ACK, resending fragment {current_fragment}...")
+#                 continue  # Resend on timeout
+
+# Globálne premenne na správu ID
+msg_id = 0
+last_received_msg_id = -1
+
+# Funkcia na inkrementáciu a resetovanie ID
+def get_next_msg_id():
+    global msg_id
+    msg_id = (msg_id + 1) % 256  # Cyklus ID od 0 po 255
+    return msg_id
+
+# Resetovanie ID pri ukončení spojenia
+def reset_msg_id():
+    global msg_id
+    msg_id = 0
 
 
 role = 0
@@ -481,8 +540,6 @@ def main():
     listener_thread.join()
     sender_thread.join()
     keep_alive_thread.join()
-
-
 
 
 main()
